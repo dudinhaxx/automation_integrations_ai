@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
+import requests
 from pydantic import BaseModel, Field
 
 from app.audit import write_audit_log
@@ -143,6 +144,121 @@ def _build_context_text(context: Dict[str, Any]) -> str:
     return "\n".join(f"{k}: {v}" for k, v in context.items())
 
 
+def _send_via_make(settings: Settings, payload: Dict[str, Any]) -> Dict[str, Any]:
+    if not settings.make_webhook_url:
+        return {"attempted": False, "provider": "MAKE", "success": False, "reason": "missing_make_webhook_url"}
+
+    headers = {"Content-Type": "application/json"}
+    if settings.make_webhook_token:
+        headers["Authorization"] = f"Bearer {settings.make_webhook_token}"
+
+    try:
+        response = requests.post(
+            settings.make_webhook_url,
+            json=payload,
+            headers=headers,
+            timeout=settings.request_timeout,
+        )
+        return {
+            "attempted": True,
+            "provider": "MAKE",
+            "success": response.status_code < 400,
+            "status_code": response.status_code,
+            "response": response.text[:500],
+        }
+    except requests.RequestException as exc:
+        return {"attempted": True, "provider": "MAKE", "success": False, "error": str(exc)}
+
+
+def _send_via_ghl(settings: Settings, payload: Dict[str, Any]) -> Dict[str, Any]:
+    if not settings.ghl_token:
+        return {"attempted": False, "provider": "GHL", "success": False, "reason": "missing_ghl_token"}
+
+    base_url = settings.ghl_base_url.rstrip("/")
+    path = settings.ghl_whatsapp_path
+    location_id = payload.get("location_id") or ""
+    if "{location_id}" in path:
+        path = path.format(location_id=location_id)
+    url = f"{base_url}/{path.lstrip('/')}"
+
+    headers = {
+        "Authorization": f"Bearer {settings.ghl_token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Version": settings.ghl_api_version,
+    }
+
+    body = {
+        "contactId": payload.get("contact_id"),
+        "locationId": location_id,
+        "message": payload.get("message_text"),
+        "type": "WhatsApp",
+        "channel": "whatsapp",
+        "messageType": "text",
+    }
+
+    try:
+        response = requests.post(url, json=body, headers=headers, timeout=settings.request_timeout)
+        return {
+            "attempted": True,
+            "provider": "GHL",
+            "success": response.status_code < 400,
+            "status_code": response.status_code,
+            "response": response.text[:500],
+            "url": url,
+        }
+    except requests.RequestException as exc:
+        return {
+            "attempted": True,
+            "provider": "GHL",
+            "success": False,
+            "error": str(exc),
+            "url": url,
+        }
+
+
+def _dispatch_outbound_message(settings: Settings, event_dict: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+    message_text = str(context.get("message_text") or context.get("text") or "").strip()
+    contact_id = event_dict.get("contact_id")
+    location_id = event_dict.get("location_id")
+
+    if not message_text:
+        return {"attempted": False, "success": False, "reason": "missing_message_text"}
+    if not contact_id:
+        return {"attempted": False, "success": False, "reason": "missing_contact_id"}
+    if not location_id:
+        return {"attempted": False, "success": False, "reason": "missing_location_id"}
+
+    if settings.agent_mode.upper() != "EXECUTE":
+        return {"attempted": False, "success": False, "reason": "agent_mode_not_execute"}
+
+    outbound_payload = {
+        "trace_id": event_dict.get("trace_id"),
+        "request_id": context.get("request_id"),
+        "contact_id": contact_id,
+        "location_id": location_id,
+        "channel": context.get("channel") or "WHATSAPP",
+        "message_text": message_text,
+        "source": context.get("source") or event_dict.get("name"),
+    }
+
+    make_result = _send_via_make(settings, outbound_payload)
+    if make_result.get("success"):
+        return {"attempted": True, "success": True, "provider": "MAKE", "details": make_result}
+
+    ghl_result = _send_via_ghl(settings, outbound_payload)
+    if ghl_result.get("success"):
+        return {"attempted": True, "success": True, "provider": "GHL", "details": ghl_result}
+
+    return {
+        "attempted": bool(make_result.get("attempted") or ghl_result.get("attempted")),
+        "success": False,
+        "provider": "NONE",
+        "make": make_result,
+        "ghl": ghl_result,
+    }
+
+
 def handle_event(settings: Settings, event_data: Dict[str, Any]) -> Dict[str, Any]:
     start_time = time.perf_counter()
     dma_rules = _load_dma_rules()
@@ -194,6 +310,7 @@ def handle_event(settings: Settings, event_data: Dict[str, Any]) -> Dict[str, An
     next_events: List[Dict[str, Any]] = []
 
     if event_name == "AUTOMATION_REQUEST":
+        delivery_result = _dispatch_outbound_message(settings, event_dict, context)
         flow = build_flow(context)
         if settings.brain_enabled and settings.openai_api_key:
             flow = generate_flow(settings, context=_build_context_text(context))
@@ -227,6 +344,7 @@ def handle_event(settings: Settings, event_data: Dict[str, Any]) -> Dict[str, An
                 "event": event_dict.get("name"),
                 "decision": flow_payload,
                 "payload": payload,
+                "delivery_result": delivery_result,
             },
         )
 
@@ -251,7 +369,7 @@ def handle_event(settings: Settings, event_data: Dict[str, Any]) -> Dict[str, An
             event_id=event_dict.get("id", ""),
             status="success",
             next_events=next_events,
-            evidence={"report_path": report_path, **flow_payload},
+            evidence={"report_path": report_path, **flow_payload, "delivery_result": delivery_result},
             duration_ms=duration_ms,
         )
 

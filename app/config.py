@@ -23,6 +23,13 @@ class Settings:
     audit_log_path: str
     reports_dir: str
     data_dir: str
+    request_timeout: int
+    make_webhook_url: str
+    make_webhook_token: str
+    ghl_base_url: str
+    ghl_token: str
+    ghl_api_version: str
+    ghl_whatsapp_path: str
 
 
 def _get_env_int(name: str, default: str) -> int:
@@ -58,4 +65,11 @@ def get_settings() -> Settings:
         audit_log_path=os.path.join(data_dir, "audit.jsonl"),
         reports_dir=reports_dir,
         data_dir=data_dir,
+        request_timeout=_get_env_int("REQUEST_TIMEOUT", "20"),
+        make_webhook_url=os.getenv("MAKE_WEBHOOK_URL", "").strip(),
+        make_webhook_token=os.getenv("MAKE_WEBHOOK_TOKEN", "").strip(),
+        ghl_base_url=os.getenv("GHL_BASE_URL", "https://services.leadconnectorhq.com").strip(),
+        ghl_token=os.getenv("GHL_TOKEN", "").strip(),
+        ghl_api_version=os.getenv("GHL_API_VERSION", "2021-07-28").strip(),
+        ghl_whatsapp_path=os.getenv("GHL_WHATSAPP_PATH", "/conversations/messages").strip(),
     )
