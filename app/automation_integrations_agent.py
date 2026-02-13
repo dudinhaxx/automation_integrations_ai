@@ -194,7 +194,7 @@ def _send_via_ghl(settings: Settings, payload: Dict[str, Any]) -> Dict[str, Any]
         "message": payload.get("message_text"),
         "type": "WhatsApp",
         "channel": "whatsapp",
-        "messageType": "text",
+        "messageType": 0,
     }
 
     try:
