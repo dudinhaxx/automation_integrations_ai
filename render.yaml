@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: automation-integrations-ai
+    env: docker
+    plan: free
+    autoDeploy: true
+    healthCheckPath: /health
+    envVars:
+      - key: INTERNAL_AGENT_API_KEY
+        value: "localtest"
+      - key: MAESTRO_BASE_URL
+        value: "https://maestro-orchestrator.onrender.com"
+      - key: AGENT_MODE
+        value: "PROPOSE"
+      - key: BRAIN_ENABLED
+        value: "false"
+      - key: OPENAI_MODEL
+        value: "gpt-5.2"
+      - key: OPENAI_TEMPERATURE
+        value: "0.2"
+      - key: OPENAI_MAX_OUTPUT_TOKENS
+        value: "800"
